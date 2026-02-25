@@ -12,6 +12,8 @@ License: MIT
 
 from __future__ import annotations
 
+
+
 import os
 import json
 import traceback
@@ -63,7 +65,8 @@ from .ripley_backend import (
     csr_envelope_cross_LminusR,
 )
 from .geometry_base import GeometryParams, BandParams
-from .figures import plot_overview_galaxy, plot_summary_vs_axis
+
+from .figures import plot_overview_galaxy, plot_summary_vs_axis, plot_ripley_summary_vs_axis, plot_band_points_only
 from .figures_legacy import plot_band_dbscan
 
 
@@ -534,11 +537,13 @@ class GalaXYWorker(QtCore.QObject):
         save_overview_figures: bool,
         save_region_figures: bool,
         save_region_ripley_figures: bool,
+        save_band_isolation_figures: bool,
         compute_cluster_ripley: bool,
         save_cluster_ripley_figures: bool,
         cluster_ripley_min_points: int,
         export_region_points: bool,
         fig_max_points: int,
+        run_mode: str = "full",
     ):
         super().__init__()
         self.points_xy = np.asarray(points_xy, dtype=float)
@@ -593,11 +598,13 @@ class GalaXYWorker(QtCore.QObject):
         self.save_overview_figures = bool(save_overview_figures)
         self.save_region_figures = bool(save_region_figures)
         self.save_region_ripley_figures = bool(save_region_ripley_figures)
+        self.save_band_isolation_figures = bool(save_band_isolation_figures)
         self.compute_cluster_ripley = bool(compute_cluster_ripley)
         self.save_cluster_ripley_figures = bool(save_cluster_ripley_figures)
         self.cluster_ripley_min_points = int(cluster_ripley_min_points)
         self.export_region_points = bool(export_region_points)
         self.fig_max_points = int(fig_max_points)
+        self.run_mode = str(run_mode or "full")
         self._cancel = False
 
     def cancel(self) -> None:
@@ -620,8 +627,30 @@ class GalaXYWorker(QtCore.QObject):
         tiling_mode = self.tiling_mode.strip() if (self.tiling_mode and self.tiling_mode.strip()) else profile.default_tiling
         axis_name, ref_name = _axis_for_binning_mode(profile.id, tiling_mode)
 
+        # ---- Pipeline mode (full vs Ripley-only)
+        run_mode = str(getattr(self, "run_mode", "full") or "full").strip().lower().replace("-", "_")
+        if run_mode in ("full", "default", "dbscan"):
+            run_dbscan = True
+        elif run_mode in ("ripley_only", "ripley"):
+            run_dbscan = False
+        else:
+            raise ValueError(f"Unknown run_mode: {self.run_mode!r} (expected 'full' or 'ripley_only')")
+
+        # Effective flags (what we will actually execute)
+        do_ripley = bool(self.do_ripley) or (not run_dbscan)
+        do_cross_ripley = bool(self.do_cross_ripley) and do_ripley
+
+        save_region_dbscan_figures = bool(self.save_region_figures) and run_dbscan
+        compute_cluster_ripley = bool(self.compute_cluster_ripley) and run_dbscan and do_ripley
+        save_cluster_ripley_figures = bool(self.save_cluster_ripley_figures) and compute_cluster_ripley
+
+        # Hierarchical clustering only makes sense if nano-clusters exist.
+        hier_params = self.hier_params
+        if not run_dbscan:
+            hier_params = HierarchicalDBSCANParams(enabled=False, eps=float(self.hier_params.eps), min_samples=int(self.hier_params.min_samples))
+
         # Helpful warning: user enabled 2.5D DBSCAN but no Z column was provided.
-        if bool(getattr(self.dbscan_params, "use_z", False)) and self.points_z is None:
+        if run_dbscan and bool(getattr(self.dbscan_params, "use_z", False)) and self.points_z is None:
             try:
                 self.logger.warning(
                     "DBSCAN 'Use Z (2.5D)' is enabled, but no Z values were provided; clustering will fall back to 2D."
@@ -632,8 +661,16 @@ class GalaXYWorker(QtCore.QObject):
         # ---- Save run config (top-level)
         cfg = {
             "app": "GalaXY_2",
-            "version": "0.2.0",
+            "version": "0.2.1",
             "timestamp": _dt.datetime.now().isoformat(timespec="seconds"),
+            "run_mode": str(run_mode),
+            "pipeline": {
+                "run_dbscan": bool(run_dbscan),
+                "run_hierarchical": bool(run_dbscan and bool(getattr(hier_params, "enabled", False))),
+                "do_ripley": bool(do_ripley),
+                "do_cross_ripley": bool(do_cross_ripley),
+                "compute_cluster_ripley": bool(compute_cluster_ripley),
+            },
             "profile": asdict(profile),
             "tiling_mode": str(tiling_mode),
             "axis": axis_name,
@@ -649,9 +686,9 @@ class GalaXYWorker(QtCore.QObject):
             "band_params": asdict(self.band_params),
             "binning_params": asdict(self.binning_params),
             "dbscan_params": asdict(self.dbscan_params),
-            "hierarchical_dbscan": asdict(self.hier_params),
-            "do_ripley": bool(self.do_ripley),
-            "do_cross_ripley": bool(self.do_cross_ripley),
+            "hierarchical_dbscan": asdict(hier_params),
+            "do_ripley": bool(do_ripley),
+            "do_cross_ripley": bool(do_cross_ripley),
             "ripley_params": asdict(self.ripley_params),
             "csr_params": asdict(self.csr_params) if self.csr_params else None,
             "channels": {
@@ -692,10 +729,10 @@ class GalaXYWorker(QtCore.QObject):
             },
             "outputs": {
                 "save_overview_figures": bool(self.save_overview_figures),
-                "save_region_dbscan_figures": bool(self.save_region_figures),
+                "save_region_dbscan_figures": bool(save_region_dbscan_figures),
                 "save_region_ripley_figures": bool(self.save_region_ripley_figures),
-                "compute_cluster_ripley": bool(self.compute_cluster_ripley),
-                "save_cluster_ripley_figures": bool(self.save_cluster_ripley_figures),
+                "compute_cluster_ripley": bool(compute_cluster_ripley),
+                "save_cluster_ripley_figures": bool(save_cluster_ripley_figures),
                 "cluster_ripley_min_points": int(self.cluster_ripley_min_points),
                 "export_region_points": bool(self.export_region_points),
                 "fig_max_points": int(self.fig_max_points),
@@ -728,7 +765,7 @@ class GalaXYWorker(QtCore.QObject):
 
         n_domains = len(self.domains)
         n_channels = len(getattr(self, "channels_to_analyze", [])) or 1
-        tasks_per_domain = n_channels + (1 if (self.do_ripley and self.do_cross_ripley) else 0)
+        tasks_per_domain = n_channels + (1 if (do_ripley and do_cross_ripley) else 0)
         total_tasks = max(1, n_domains * tasks_per_domain)
         done_tasks = 0
 
@@ -979,8 +1016,25 @@ class GalaXYWorker(QtCore.QObject):
                         except Exception:
                             pass
 
+                    # Per-band isolation PNG (DBSCAN-agnostic):
+                    # polygon outline + points that belong to this band/region.
+                    if self.save_band_isolation_figures:
+                        try:
+                            fig_dir = os.path.join(_ch_dir, "figures", "band_points")
+                            os.makedirs(fig_dir, exist_ok=True)
+                            out_png = os.path.join(fig_dir, f"band_{_sanitize_filename(region.name)}.png")
+                            plot_band_points_only(
+                                title=f"{_roi} — {_alias} — {region.name}",
+                                band_geom=region.geom,
+                                points_xy=pts_r,
+                                out_path=out_png,
+                                seed=0,
+                            )
+                        except Exception:
+                            pass
+
                     # Per-region DBSCAN figure
-                    if self.save_region_figures:
+                    if save_region_dbscan_figures:
                         try:
                             fig_dir = os.path.join(_ch_dir, "figures", "region_dbscan")
                             os.makedirs(fig_dir, exist_ok=True)
@@ -1001,7 +1055,7 @@ class GalaXYWorker(QtCore.QObject):
                             pass
 
                     # Per-cluster Ripley (per DBSCAN cluster inside this region)
-                    if self.do_ripley and self.compute_cluster_ripley:
+                    if do_ripley and compute_cluster_ripley:
                         try:
                             min_pts = int(self.cluster_ripley_min_points)
                             cluster_ids = sorted(set(int(x) for x in labels.tolist() if int(x) >= 0))
@@ -1052,7 +1106,7 @@ class GalaXYWorker(QtCore.QObject):
                                         points_xy=pts_c,
                                         window_geom=w,
                                         ripley=self.ripley_params,
-                                        csr=self.csr_params if self.do_ripley else None,
+                                        csr=self.csr_params if do_ripley else None,
                                         logger=self.logger,
                                         seed=0,
                                     )
@@ -1067,7 +1121,7 @@ class GalaXYWorker(QtCore.QObject):
                                     csv_path = os.path.join(cl_rip_dir, f"ripley_{base}.csv")
                                     curve.to_csv(csv_path, index=False)
 
-                                    if self.save_cluster_ripley_figures:
+                                    if save_cluster_ripley_figures:
                                         if not made_fig_dir:
                                             os.makedirs(cl_fig_dir, exist_ok=True)
                                             made_fig_dir = True
@@ -1102,30 +1156,53 @@ class GalaXYWorker(QtCore.QObject):
                     points_z=z_ch,
                     regions=regions,
                     dbscan=self.dbscan_params,
-                    hierarchical=self.hier_params,
-                    ripley=self.ripley_params if self.do_ripley else None,
-                    csr=self.csr_params if self.do_ripley else None,
+                    hierarchical=hier_params,
+                    ripley=self.ripley_params if do_ripley else None,
+                    csr=self.csr_params if do_ripley else None,
                     ref_values=ref_ch,
                     ref_name=ref_name,
                     region_callback=_callback,
+                    analysis_mode=("full" if run_dbscan else "ripley_only"),
                     logger=self.logger,
                 )
 
                 # ---- Save tables (per-channel)
                 out.region_summary.to_csv(os.path.join(ch_dir, "region_summary.csv"), index=False)
+
+                # Optional convenience: a slim Ripley-only table (keeps only Ripley-relevant columns)
+                if (not run_dbscan) and do_ripley:
+                    try:
+                        keep_cols = [
+                            "region",
+                            "axis",
+                            "d_start",
+                            "d_end",
+                            "n_points",
+                            "area",
+                            "skeleton_length",
+                            "density_area",
+                            "density_length",
+                            "ripley_r_peak",
+                            "ripley_lmr_peak",
+                            "ripley_auc_pos",
+                        ]
+                        cols = [c for c in keep_cols if c in out.region_summary.columns]
+                        out.region_summary.loc[:, cols].to_csv(os.path.join(ch_dir, "ripley_summary.csv"), index=False)
+                    except Exception:
+                        pass
                 out.clusters.to_csv(os.path.join(ch_dir, "clusters.csv"), index=False)
                 if out.superclusters is not None:
                     out.superclusters.to_csv(os.path.join(ch_dir, "superclusters.csv"), index=False)
 
                 # Ripley curves (per region)
-                if self.do_ripley and out.ripley_curves:
+                if do_ripley and out.ripley_curves:
                     rip_dir = os.path.join(ch_dir, "ripley")
                     os.makedirs(rip_dir, exist_ok=True)
                     for rname, curve in out.ripley_curves.items():
                         curve.to_csv(os.path.join(rip_dir, f"ripley_{_sanitize_filename(rname)}.csv"), index=False)
 
                 # Ripley figures per region (PNG)
-                if self.do_ripley and out.ripley_curves and self.save_region_ripley_figures:
+                if do_ripley and out.ripley_curves and self.save_region_ripley_figures:
                     try:
                         fig_dir = os.path.join(ch_dir, "figures", "region_ripley")
                         os.makedirs(fig_dir, exist_ok=True)
@@ -1160,13 +1237,22 @@ class GalaXYWorker(QtCore.QObject):
                             seed=0,
                             dpi=220,
                         )
-                        plot_summary_vs_axis(
-                            summary_df=out.region_summary,
-                            out_path=os.path.join(fig_dir, "summary_vs_axis.png"),
-                            axis_label=axis_name,
-                            title=f"{roi_raw_name} — {alias} — summary",
-                            dpi=220,
-                        )
+                        if run_dbscan:
+                            plot_summary_vs_axis(
+                                summary_df=out.region_summary,
+                                out_path=os.path.join(fig_dir, "summary_vs_axis.png"),
+                                axis_label=axis_name,
+                                title=f"{roi_raw_name} — {alias} — summary",
+                                dpi=220,
+                            )
+                        elif do_ripley:
+                            plot_ripley_summary_vs_axis(
+                                summary_df=out.region_summary,
+                                out_path=os.path.join(fig_dir, "ripley_vs_axis.png"),
+                                axis_label=axis_name,
+                                title=f"{roi_raw_name} — {alias} — Ripley summary",
+                                dpi=220,
+                            )
                     except Exception:
                         pass
 
@@ -1206,7 +1292,7 @@ class GalaXYWorker(QtCore.QObject):
                 self.progress.emit(int(100 * done_tasks / total_tasks))
 
             # ---- Cross-Ripley across channels (ROI-level)
-            if self.do_ripley and self.do_cross_ripley and (self.channel_labels is not None):
+            if do_ripley and do_cross_ripley and (self.channel_labels is not None):
                 try:
                     cross_channels = list(self.channels_to_use) if self.channels_to_use is not None else list(self.channels_to_analyze)
                     cross_channels = [str(c) for c in cross_channels]
@@ -1269,7 +1355,7 @@ class GalaXYWorker(QtCore.QObject):
                                             points2_xy=pts2,
                                             window_geom=region.geom,
                                             ripley=self.ripley_params,
-                                            csr=self.csr_params if self.do_ripley else None,
+                                            csr=self.csr_params if do_ripley else None,
                                             logger=self.logger,
                                             seed=0,
                                         )
