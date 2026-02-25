@@ -1,6 +1,6 @@
-# GalaXY_2
+# GalaXY
 
-GalaXY_2 is a **topology-aware** 2D (and optional **2.5D**) cluster analysis application for spatial point patterns (e.g., SMLM localizations).
+GalaXY is a **topology-aware** 2D (and optional **2.5D**) cluster analysis application for spatial point patterns (e.g., SMLM localizations).
 
 It generalizes “membrane + contact zone (ZC)” workflows into a single robust backend that can handle:
 
@@ -19,6 +19,7 @@ It generalizes “membrane + contact zone (ZC)” workflows into a single robust
   *Nucleus-typed* holes are used for perinuclear axes; all hole types are still removed from the domain.
 - **Optional cross-Ripley** (expert): compute bivariate Ripley L12(r) between channel pairs.
 - **Optional per-region Ripley figures**: one PNG per region in addition to the CSV curves.
+- **Ripley-only mode**: skip DBSCAN/hierarchical clustering and run only per-region Ripley first (useful to pick a sensible DBSCAN eps).
 
 The GUI is implemented as a Napari dock widget (Qt).
 
@@ -66,10 +67,11 @@ For each ROI (in a subfolder `roi_XX__name/`):
 For each **channel** inside each ROI (subfolder `channel_<alias>/`):
 
 - `region_summary.csv`
-- `clusters.csv`
+- `clusters.csv` (empty in Ripley-only mode)
 - `superclusters.csv` (if hierarchical clustering enabled)
 - `ripley/` (if Ripley enabled): one CSV per region
-- `figures/overview.png`, `figures/summary_vs_axis.png`
+- `figures/overview.png`, `figures/summary_vs_axis.png` (full mode)
+- `figures/ripley_vs_axis.png` + `ripley_summary.csv` (Ripley-only mode)
 - optional `figures/region_dbscan/*.png`
 - optional `figures/region_ripley/*.png`
 - optional `points_labeled.csv` (region labels and cluster labels)
