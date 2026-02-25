@@ -397,6 +397,7 @@ def analyze_regions(
     ref_values: Optional[np.ndarray] = None,
     ref_name: str = "ref",
     region_callback: Optional[RegionCallback] = None,
+    analysis_mode: str = "full",
     compute_cluster_ripley: bool = False,
     cluster_ripley_min_points: int = 6,
     logger=None,
@@ -420,13 +421,28 @@ def analyze_regions(
         Label for the scalar (used in output column names).
     region_callback:
         If provided, called for each region with (region, pts_in_region, labels, ref_in_region).
+    analysis_mode:
+        "full" (default) runs DBSCAN (+ optional hierarchical + optional cluster-Ripley).
+        "ripley_only" skips DBSCAN/hierarchical and computes only region-level Ripley (if enabled).
 
     Returns
     -------
     RegionAnalysisOutput
     """
 
-    _ensure_shapely()
+    mode = str(analysis_mode or "full").strip().lower().replace("-", "_")
+    if mode in ("full", "dbscan", "default"):
+        run_dbscan_mode = True
+    elif mode in ("ripley_only", "ripley"):
+        run_dbscan_mode = False
+    else:
+        raise ValueError(f"Unknown analysis_mode: {analysis_mode!r} (expected 'full' or 'ripley_only')")
+
+    # NOTE: Ripley-only mode intentionally skips any shapely-heavy cluster geometry
+    # computations. The worker/tiling still requires shapely upstream to construct
+    # valid RegionSpec windows.
+    if run_dbscan_mode:
+        _ensure_shapely()
 
     pts_all = np.asarray(points_xy, dtype=float)
     if pts_all.ndim != 2 or pts_all.shape[1] != 2:
@@ -452,6 +468,24 @@ def analyze_regions(
     cluster_ripley_rows: List[Dict] = []
     cluster_ripley_curves: Dict[str, pd.DataFrame] = {}
 
+    # Stable empty cluster table (ensures output CSV has columns even when clustering is skipped).
+    def _empty_cluster_table() -> pd.DataFrame:
+        z_empty = None
+        if points_z is not None and bool(getattr(dbscan, "use_z", False)):
+            z_empty = np.zeros((0,), dtype=float)
+        rv_empty = np.zeros((0,), dtype=float) if ref_values is not None else None
+        return _cluster_table_generic(
+            points_xy=np.zeros((0, 2), dtype=float),
+            points_z=z_empty,
+            labels=np.zeros((0,), dtype=int),
+            region_name="",
+            axis="",
+            d_start=float("nan"),
+            d_end=float("nan"),
+            ref_values=rv_empty,
+            ref_name=ref_name,
+        ).iloc[0:0]
+
     for region in regions:
         if region is None or region.area <= 0 or region.parts is None:
             continue
@@ -463,7 +497,7 @@ def analyze_regions(
 
         # Guard: remove non-finite coordinates and, if provided, non-finite ref values.
         keep = np.all(np.isfinite(pts_r), axis=1)
-        if z_r is not None and bool(getattr(dbscan, "use_z", False)):
+        if run_dbscan_mode and z_r is not None and bool(getattr(dbscan, "use_z", False)):
             keep &= np.isfinite(z_r)
         if rv_r is not None:
             keep &= np.isfinite(rv_r)
@@ -474,13 +508,32 @@ def analyze_regions(
         if z_r is not None:
             z_r = z_r[keep]
 
-        # Cluster in 2D or 2.5D depending on dbscan.use_z and availability of z
-        if z_r is not None and bool(getattr(dbscan, "use_z", False)):
-            feats = np.column_stack([pts_r, z_r])
-        else:
-            feats = pts_r
+        if run_dbscan_mode:
+            # Cluster in 2D or 2.5D depending on dbscan.use_z and availability of z
+            if z_r is not None and bool(getattr(dbscan, "use_z", False)):
+                feats = np.column_stack([pts_r, z_r])
+            else:
+                feats = pts_r
 
-        labels = run_dbscan(feats, dbscan)
+            labels = run_dbscan(feats, dbscan)
+
+            ct = _cluster_table_generic(
+                points_xy=pts_r,
+                points_z=z_r,
+                labels=labels,
+                region_name=region.name,
+                axis=region.axis,
+                d_start=region.d_start,
+                d_end=region.d_end,
+                ref_values=rv_r,
+                ref_name=ref_name,
+            )
+            cluster_tables.append(ct)
+
+        else:
+            # Ripley-only mode: no clustering performed. We still provide a labels
+            # array (all noise) for downstream exports (e.g. points_labeled.csv).
+            labels = np.full((pts_r.shape[0],), -1, dtype=int)
 
         if region_callback is not None:
             try:
@@ -500,27 +553,21 @@ def analyze_regions(
                         pass
 
         n_points = int(pts_r.shape[0])
-        n_clusters = int(len(set(labels.tolist())) - (1 if -1 in labels else 0))
-        frac_in = float(np.mean(labels >= 0)) if n_points > 0 else 0.0
-        sizes = [int(np.sum(labels == cid)) for cid in set(labels.tolist()) if cid >= 0]
-        mean_sz = float(np.mean(sizes)) if sizes else 0.0
-        med_sz = float(np.median(sizes)) if sizes else 0.0
+        if run_dbscan_mode:
+            n_clusters = int(len(set(labels.tolist())) - (1 if -1 in labels else 0))
+            frac_in = float(np.mean(labels >= 0)) if n_points > 0 else 0.0
+            sizes = [int(np.sum(labels == cid)) for cid in set(labels.tolist()) if cid >= 0]
+            mean_sz = float(np.mean(sizes)) if sizes else 0.0
+            med_sz = float(np.median(sizes)) if sizes else 0.0
+        else:
+            # Prefer NaNs over zeros to avoid misleading plots.
+            n_clusters = np.nan
+            frac_in = np.nan
+            mean_sz = np.nan
+            med_sz = np.nan
 
         density_area = float(n_points / region.area) if region.area > 0 else float("nan")
         density_len = float(n_points / region.skeleton_length) if np.isfinite(region.skeleton_length) and region.skeleton_length > 0 else float("nan")
-
-        ct = _cluster_table_generic(
-            points_xy=pts_r,
-            points_z=z_r,
-            labels=labels,
-            region_name=region.name,
-            axis=region.axis,
-            d_start=region.d_start,
-            d_end=region.d_end,
-            ref_values=rv_r,
-            ref_name=ref_name,
-        )
-        cluster_tables.append(ct)
 
         r_peak = lmr_peak = auc_pos = None
         if ripley is not None:
@@ -532,7 +579,7 @@ def analyze_regions(
             auc_pos = float(summ.get("auc_pos", np.nan))
 
         # Optional: Ripley per DBSCAN cluster inside this region (local-window hull buffered by eps)
-        if (ripley is not None) and compute_cluster_ripley and (pts_r.shape[0] >= 2):
+        if run_dbscan_mode and (ripley is not None) and compute_cluster_ripley and (pts_r.shape[0] >= 2):
             for cid in sorted({int(x) for x in set(labels.tolist()) if int(x) >= 0}):
                 idx_c = labels == cid
                 pts_c = pts_r[idx_c]
@@ -580,6 +627,7 @@ def analyze_regions(
             "density_length": density_len,
             "dbscan_eps": float(dbscan.eps),
             "dbscan_min_samples": int(dbscan.min_samples),
+            "dbscan_ran": bool(run_dbscan_mode),
             "n_clusters": n_clusters,
             "frac_points_in_clusters": frac_in,
             "mean_cluster_size": mean_sz,
@@ -596,12 +644,15 @@ def analyze_regions(
         summary_rows.append(row)
 
     region_summary = pd.DataFrame(summary_rows)
-    clusters = pd.concat(cluster_tables, ignore_index=True) if cluster_tables else pd.DataFrame()
 
-    superclusters = run_hierarchical_dbscan(clusters.rename(columns={"region": "band"}), hierarchical)
-    # run_hierarchical_dbscan expects column 'band'; we map back.
-    if superclusters is not None and not superclusters.empty:
-        superclusters = superclusters.rename(columns={"band": "region"})
+    clusters = pd.concat(cluster_tables, ignore_index=True) if cluster_tables else _empty_cluster_table()
+
+    superclusters = None
+    if run_dbscan_mode:
+        superclusters = run_hierarchical_dbscan(clusters.rename(columns={"region": "band"}), hierarchical)
+        # run_hierarchical_dbscan expects column 'band'; we map back.
+        if superclusters is not None and not superclusters.empty:
+            superclusters = superclusters.rename(columns={"band": "region"})
 
     cluster_ripley_summary = pd.DataFrame(cluster_ripley_rows) if cluster_ripley_rows else None
     cluster_ripley_curves_out = cluster_ripley_curves if cluster_ripley_curves else None
