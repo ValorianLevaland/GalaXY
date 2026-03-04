@@ -129,16 +129,8 @@ class GalaXYDock(QtWidgets.QWidget):
         self.worker_thread: Optional[QtCore.QThread] = None
         self.worker: Optional[GalaXYWorker] = None
 
-        # UI state (used for mode-dependent enabling/disabling)
-        self._ripley_prev_checked: Optional[bool] = None
-
         self._build_ui()
         self._refresh_profiles()
-        # Ensure UI is consistent with the default run mode
-        try:
-            self._on_run_mode_changed()
-        except Exception:
-            pass
 
     # -----------------
     # UI
@@ -376,21 +368,6 @@ class GalaXYDock(QtWidgets.QWidget):
         tab_run = QtWidgets.QWidget()
         v = QtWidgets.QVBoxLayout(tab_run)
 
-        # Run mode
-        self.grp_mode = QtWidgets.QGroupBox("Run mode")
-        gm = QtWidgets.QGridLayout(self.grp_mode)
-        self.cmb_run_mode = QtWidgets.QComboBox()
-        self.cmb_run_mode.addItem("Full analysis (DBSCAN + optional Ripley)", "full")
-        self.cmb_run_mode.addItem("Ripley-only (skip DBSCAN clustering)", "ripley_only")
-        self.cmb_run_mode.setCurrentIndex(0)
-        self.cmb_run_mode.currentIndexChanged.connect(self._on_run_mode_changed)
-        gm.addWidget(QtWidgets.QLabel("Pipeline:"), 0, 0)
-        gm.addWidget(self.cmb_run_mode, 0, 1, 1, 2)
-        self.lbl_run_mode_hint = QtWidgets.QLabel("")
-        self.lbl_run_mode_hint.setWordWrap(True)
-        gm.addWidget(self.lbl_run_mode_hint, 1, 0, 1, 3)
-        v.addWidget(self.grp_mode)
-
         # Output
         self.grp_out = QtWidgets.QGroupBox("Output")
         go = QtWidgets.QGridLayout(self.grp_out)
@@ -409,21 +386,25 @@ class GalaXYDock(QtWidgets.QWidget):
         self.chk_fig_region.setChecked(True)
         go.addWidget(self.chk_fig_region, 2, 0, 1, 3)
 
+        self.chk_fig_cluster_hists = QtWidgets.QCheckBox("Save cluster histogram figures")
+        self.chk_fig_cluster_hists.setChecked(True)
+        go.addWidget(self.chk_fig_cluster_hists, 3, 0, 1, 3)
+
+        self.chk_fig_cluster_hists_region = QtWidgets.QCheckBox("Save per-region cluster histogram figures")
+        self.chk_fig_cluster_hists_region.setChecked(True)
+        go.addWidget(self.chk_fig_cluster_hists_region, 4, 0, 1, 3)
+
         self.chk_fig_ripley_region = QtWidgets.QCheckBox("Save per-region Ripley figures")
         self.chk_fig_ripley_region.setChecked(False)
-        go.addWidget(self.chk_fig_ripley_region, 3, 0, 1, 3)
-
-        self.chk_fig_band_isolation = QtWidgets.QCheckBox("Save per-band isolation PNGs")
-        self.chk_fig_band_isolation.setChecked(False)
-        go.addWidget(self.chk_fig_band_isolation, 4, 0, 1, 3)
+        go.addWidget(self.chk_fig_ripley_region, 5, 0, 1, 3)
 
         self.chk_ripley_per_cluster = QtWidgets.QCheckBox("Compute Ripley per DBSCAN cluster (local window)")
         self.chk_ripley_per_cluster.setChecked(True)
-        go.addWidget(self.chk_ripley_per_cluster, 5, 0, 1, 3)
+        go.addWidget(self.chk_ripley_per_cluster, 6, 0, 1, 3)
 
         self.chk_fig_ripley_cluster = QtWidgets.QCheckBox("Save per-cluster Ripley figures")
         self.chk_fig_ripley_cluster.setChecked(True)
-        go.addWidget(self.chk_fig_ripley_cluster, 6, 0, 1, 3)
+        go.addWidget(self.chk_fig_ripley_cluster, 7, 0, 1, 3)
 
         lab = QtWidgets.QLabel("Cluster Ripley min points:")
         self.spin_cluster_ripley_minpts = QtWidgets.QSpinBox()
@@ -434,15 +415,15 @@ class GalaXYDock(QtWidgets.QWidget):
         hh.addWidget(self.spin_cluster_ripley_minpts)
         w = QtWidgets.QWidget()
         w.setLayout(hh)
-        go.addWidget(w, 6, 0, 1, 3)
+        go.addWidget(w, 8, 0, 1, 3)
 
         self.chk_export_points = QtWidgets.QCheckBox("Export region-labeled points")
         self.chk_export_points.setChecked(False)
-        go.addWidget(self.chk_export_points, 7, 0, 1, 3)
+        go.addWidget(self.chk_export_points, 9, 0, 1, 3)
 
         self.spn_fig_maxpts = QtWidgets.QSpinBox(); self.spn_fig_maxpts.setRange(1000, 2_000_000); self.spn_fig_maxpts.setValue(200_000)
-        go.addWidget(QtWidgets.QLabel("Max points in figures:"), 8, 0)
-        go.addWidget(self.spn_fig_maxpts, 8, 1)
+        go.addWidget(QtWidgets.QLabel("Max points in figures:"), 10, 0)
+        go.addWidget(self.spn_fig_maxpts, 10, 1)
 
         v.addWidget(self.grp_out)
 
@@ -1503,79 +1484,6 @@ class GalaXYDock(QtWidgets.QWidget):
     # Run analysis
     # -----------------
 
-    def _get_run_mode(self) -> str:
-        """Return the selected pipeline mode.
-
-        Values:
-          - "full": DBSCAN (+ optional Ripley)
-          - "ripley_only": Ripley only (skip DBSCAN/hierarchical)
-        """
-        try:
-            v = self.cmb_run_mode.currentData()
-        except Exception:
-            v = None
-        v = str(v or "full").strip().lower().replace("-", "_")
-        return "ripley_only" if v == "ripley_only" else "full"
-
-    def _on_run_mode_changed(self) -> None:
-        """Update widget enable states based on the selected run mode."""
-        mode = self._get_run_mode()
-        ripley_only = mode == "ripley_only"
-
-        # Hint text
-        if ripley_only:
-            self.lbl_run_mode_hint.setText(
-                "Ripley-only mode: compute Ripley K / Besag L(r)-r per region and skip DBSCAN + hierarchical clustering. "
-                "Cluster-based outputs (per-region DBSCAN figures and per-cluster Ripley) are disabled."
-            )
-        else:
-            self.lbl_run_mode_hint.setText(
-                "Full mode: compute DBSCAN nano-clusters per region (plus optional hierarchical clustering). "
-                "Ripley analysis is optional."
-            )
-
-        # Ripley checkbox: Ripley-only requires Ripley.
-        if ripley_only:
-            if self._ripley_prev_checked is None:
-                self._ripley_prev_checked = bool(self.chk_ripley.isChecked())
-            self.chk_ripley.setChecked(True)
-            self.chk_ripley.setEnabled(False)
-        else:
-            self.chk_ripley.setEnabled(True)
-            if self._ripley_prev_checked is not None:
-                try:
-                    self.chk_ripley.setChecked(bool(self._ripley_prev_checked))
-                finally:
-                    self._ripley_prev_checked = None
-
-        # DBSCAN and hierarchical groups are irrelevant in Ripley-only.
-        try:
-            self.grp_db.setEnabled(not ripley_only)
-        except Exception:
-            pass
-        try:
-            self.grp_hier.setEnabled(not ripley_only)
-        except Exception:
-            pass
-
-        # Output options that depend on DBSCAN
-        for w in (
-            self.chk_fig_region,
-            self.chk_ripley_per_cluster,
-            self.chk_fig_ripley_cluster,
-            self.spin_cluster_ripley_minpts,
-        ):
-            try:
-                w.setEnabled(not ripley_only)
-            except Exception:
-                pass
-
-        # Run button label (small UX cue)
-        try:
-            self.btn_run.setText("Run Ripley-only analysis" if ripley_only else "Run analysis")
-        except Exception:
-            pass
-
     def _on_run(self):
         if self.points_xy is None:
             QtWidgets.QMessageBox.warning(self, "No points", "Load data and show points first.")
@@ -1674,33 +1582,13 @@ class GalaXYDock(QtWidgets.QWidget):
             )
         save_overview_figures = bool(self.chk_fig_overview.isChecked())
         save_region_figures = bool(self.chk_fig_region.isChecked())
+        save_cluster_hist_figures = bool(getattr(self, "chk_fig_cluster_hists", None) is not None and self.chk_fig_cluster_hists.isChecked())
+        save_region_cluster_hist_figures = bool(getattr(self, "chk_fig_cluster_hists_region", None) is not None and self.chk_fig_cluster_hists_region.isChecked())
         save_region_ripley_figures = bool(getattr(self, "chk_fig_ripley_region", None) is not None and self.chk_fig_ripley_region.isChecked())
-        save_band_isolation_figures = bool(self.chk_fig_band_isolation.isChecked()) if hasattr(self,
-                                                                                               'chk_fig_band_isolation') else False
-
 
         compute_cluster_ripley = bool(getattr(self, "chk_ripley_per_cluster", None) is not None and self.chk_ripley_per_cluster.isChecked())
         save_cluster_ripley_figures = bool(getattr(self, "chk_fig_ripley_cluster", None) is not None and self.chk_fig_ripley_cluster.isChecked())
         cluster_ripley_min_points = int(getattr(self, "spin_cluster_ripley_minpts", None).value() if getattr(self, "spin_cluster_ripley_minpts", None) is not None else 6)
-
-        # Run mode overrides (Ripley-only skips DBSCAN/hierarchical)
-        run_mode = self._get_run_mode()
-        if run_mode == "ripley_only":
-            do_ripley = True
-            save_region_figures = False
-            compute_cluster_ripley = False
-            save_cluster_ripley_figures = False
-            hier_params = HierarchicalDBSCANParams(
-                enabled=False,
-                eps=float(self.spn_eps2.value()),
-                min_samples=int(self.spn_min2.value()),
-            )
-            try:
-                self.logger.info("Run mode: Ripley-only (DBSCAN clustering is skipped).")
-            except Exception:
-                pass
-        else:
-            run_mode = "full"
 
         export_region_points = bool(self.chk_export_points.isChecked())
         fig_max_points = int(self.spn_fig_maxpts.value())
@@ -1774,14 +1662,14 @@ class GalaXYDock(QtWidgets.QWidget):
             logger=self.logger,
             save_overview_figures=save_overview_figures,
             save_region_figures=save_region_figures,
+            save_cluster_hist_figures=save_cluster_hist_figures,
+            save_region_cluster_hist_figures=save_region_cluster_hist_figures,
             save_region_ripley_figures=save_region_ripley_figures,
-            save_band_isolation_figures=save_band_isolation_figures,
             compute_cluster_ripley=compute_cluster_ripley,
             save_cluster_ripley_figures=save_cluster_ripley_figures,
             cluster_ripley_min_points=cluster_ripley_min_points,
             export_region_points=export_region_points,
             fig_max_points=fig_max_points,
-            run_mode=run_mode,
         )
         self.worker.moveToThread(self.worker_thread)
 
