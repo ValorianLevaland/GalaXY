@@ -1670,6 +1670,7 @@ class GalaXYDock(QtWidgets.QWidget):
             cluster_ripley_min_points=cluster_ripley_min_points,
             export_region_points=export_region_points,
             fig_max_points=fig_max_points,
+            run_mode=run_mode,
         )
         self.worker.moveToThread(self.worker_thread)
 
