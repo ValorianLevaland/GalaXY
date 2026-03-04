@@ -1728,9 +1728,9 @@ def main():
         QtWidgets.QMessageBox.critical(None, "Missing dependency: napari", f"Napari could not be imported.\n\n{e}")
         return
 
-    viewer = napari.Viewer(title="GalaXY_2")
+    viewer = napari.Viewer(title="GalaXY_v20260304")
     dock = GalaXYDock(viewer)
-    viewer.window.add_dock_widget(dock, area="right", name="GalaXY_2")
+    viewer.window.add_dock_widget(dock, area="right", name="GalaXY_v20260304")
     napari.run()
 
 
