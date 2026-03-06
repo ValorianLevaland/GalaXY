@@ -842,14 +842,14 @@ def _write_index_html(report_dir: str) -> None:
         "<ul>",
     ]
     for rel in csvs:
-        html.append(f"<li><a href='{rel}'>{rel}</a></li>")
+        html.append(f"<li><a href='{_html.escape(rel)}'>{_html.escape(rel)}</a></li>")
     html += ["</ul>", "<h2>Figures</h2>"]
 
     for rel in pngs:
         html += [
             "<div class='card'>",
-            f"<div><code>{rel}</code></div>",
-            f"<div><img src='{rel}'></div>",
+            f"<div><code>{_html.escape(rel)}</code></div>",
+            f"<div><img src='{_html.escape(rel)}'></div>",
             "</div>",
         ]
 
