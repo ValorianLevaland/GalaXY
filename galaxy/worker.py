@@ -15,6 +15,7 @@ from __future__ import annotations
 
 
 import os
+import threading
 import json
 import traceback
 import datetime as _dt
@@ -457,7 +458,7 @@ def _assign_children_to_domains(
                     assigned = i
                     break
             except Exception:
-                pass
+                pass  # shapely topological predicate may raise on degenerate geometry; fall through to centroid fallback
 
         if assigned is None:
             # Nearest domain centroid
@@ -537,13 +538,18 @@ class GalaXYWorker(QtCore.QObject):
         save_overview_figures: bool,
         save_region_figures: bool,
         save_region_ripley_figures: bool,
-        save_band_isolation_figures: bool,
-        compute_cluster_ripley: bool,
-        save_cluster_ripley_figures: bool,
-        cluster_ripley_min_points: int,
-        export_region_points: bool,
-        fig_max_points: int,
+        save_band_isolation_figures: bool = False,
+        save_cluster_hist_figures: bool = True,
+        save_region_cluster_hist_figures: bool = True,
+        compute_cluster_ripley: bool = False,
+        save_cluster_ripley_figures: bool = False,
+        cluster_ripley_min_points: int = 6,
+        export_region_points: bool = False,
+        fig_max_points: int = 200_000,
         run_mode: str = "full",
+        save_band_isolation_figures: bool = False,
+        save_cluster_hist_figures: bool = True,
+        save_region_cluster_hist_figures: bool = True,
     ):
         super().__init__()
         self.points_xy = np.asarray(points_xy, dtype=float)
@@ -599,16 +605,21 @@ class GalaXYWorker(QtCore.QObject):
         self.save_region_figures = bool(save_region_figures)
         self.save_region_ripley_figures = bool(save_region_ripley_figures)
         self.save_band_isolation_figures = bool(save_band_isolation_figures)
+        self.save_cluster_hist_figures = bool(save_cluster_hist_figures)
+        self.save_region_cluster_hist_figures = bool(save_region_cluster_hist_figures)
+        self.save_band_isolation_figures = bool(save_band_isolation_figures)
+        self.save_cluster_hist_figures = bool(save_cluster_hist_figures)
+        self.save_region_cluster_hist_figures = bool(save_region_cluster_hist_figures)
         self.compute_cluster_ripley = bool(compute_cluster_ripley)
         self.save_cluster_ripley_figures = bool(save_cluster_ripley_figures)
         self.cluster_ripley_min_points = int(cluster_ripley_min_points)
         self.export_region_points = bool(export_region_points)
         self.fig_max_points = int(fig_max_points)
         self.run_mode = str(run_mode or "full")
-        self._cancel = False
+        self._cancel = threading.Event()
 
     def cancel(self) -> None:
-        self._cancel = True
+        self._cancel.set()
 
     @QtCore.Slot()
     def run(self) -> None:
@@ -651,12 +662,9 @@ class GalaXYWorker(QtCore.QObject):
 
         # Helpful warning: user enabled 2.5D DBSCAN but no Z column was provided.
         if run_dbscan and bool(getattr(self.dbscan_params, "use_z", False)) and self.points_z is None:
-            try:
-                self.logger.warning(
-                    "DBSCAN 'Use Z (2.5D)' is enabled, but no Z values were provided; clustering will fall back to 2D."
-                )
-            except Exception:
-                pass
+            self.logger.warning(
+                "DBSCAN 'Use Z (2.5D)' is enabled, but no Z values were provided; clustering will fall back to 2D."
+            )
 
         # ---- Save run config (top-level)
         cfg = {
@@ -740,17 +748,11 @@ class GalaXYWorker(QtCore.QObject):
             },
         }
 
-        save_run_config(os.path.join(self.out_dir, "run_config.json"), cfg)
-        try:
-            self.logger.info(f"Saved run_config.json in {self.out_dir}")
-        except Exception:
-            pass
+        save_run_config(os.path.join(self.out_dir, "run_config.json"), cfg)            
+        self.logger.info(f"Saved run_config.json in {self.out_dir}")
 
-        if not self.domains:
-            try:
-                self.logger.warning("No domain ROIs selected. Nothing to do.")
-            except Exception:
-                pass
+        if not self.domains:                
+            self.logger.warning("No domain ROIs selected. Nothing to do.")
             self.finished.emit(self.out_dir)
             return
 
@@ -770,30 +772,20 @@ class GalaXYWorker(QtCore.QObject):
         done_tasks = 0
 
         for idx, dom in enumerate(self.domains, start=1):
-            if self._cancel:
-                try:
-                    self.logger.warning("Analysis canceled by user.")
-                except Exception:
-                    pass
+            if self._cancel.is_set():                    
+                self.logger.warning("Analysis canceled by user.")
                 break
 
             roi_raw_name = str(dom.get("name", f"domain_{idx:02d}"))
             roi_slug = _sanitize_filename(roi_raw_name)
             roi_dirname = f"roi_{idx:02d}__{roi_slug}"
             cell_dir = os.path.join(self.out_dir, roi_dirname)
-            os.makedirs(cell_dir, exist_ok=True)
-
-            try:
-                self.logger.info(f"--- ROI {idx}/{n_domains}: {roi_raw_name} ---")
-            except Exception:
-                pass
+            os.makedirs(cell_dir, exist_ok=True)                
+            self.logger.info(f"--- ROI {idx}/{n_domains}: {roi_raw_name} ---")
 
             outer_geom = dom.get("geom")
-            if outer_geom is None or getattr(outer_geom, "is_empty", True):
-                try:
-                    self.logger.warning(f"Skipping ROI '{roi_raw_name}': empty geometry")
-                except Exception:
-                    pass
+            if outer_geom is None or getattr(outer_geom, "is_empty", True):                    
+                self.logger.warning(f"Skipping ROI '{roi_raw_name}': empty geometry")
                 done_tasks += tasks_per_domain
                 self.progress.emit(int(100 * done_tasks / total_tasks))
                 continue
@@ -855,11 +847,8 @@ class GalaXYWorker(QtCore.QObject):
                 logger=self.logger,
             )
 
-            if not regions:
-                try:
-                    self.logger.warning(f"No non-empty regions produced for ROI '{roi_raw_name}'.")
-                except Exception:
-                    pass
+            if not regions:                    
+                self.logger.warning(f"No non-empty regions produced for ROI '{roi_raw_name}'.")
                 done_tasks += tasks_per_domain
                 self.progress.emit(int(100 * done_tasks / total_tasks))
                 continue
@@ -880,14 +869,15 @@ class GalaXYWorker(QtCore.QObject):
                         }
                     )
                 pd.DataFrame(rows).to_csv(os.path.join(cell_dir, "regions_wkt.csv"), index=False)
-            except Exception:
-                pass
+            except Exception as exc:
+                self.logger.warning(f"Could not save regions_wkt.csv for ROI '{roi_raw_name}': {exc}")
 
             # Pre-filter points to this domain to speed up per-region masking.
             try:
                 dom_parts = tuple(shapely_to_parts(domain_geom))
                 in_dom = mask_points_in_poly(dom_parts, self.points_xy)
-            except Exception:
+            except Exception as exc:
+                self.logger.warning(f"Point masking failed for ROI '{roi_raw_name}' (using all points): {exc}")
                 in_dom = np.ones((self.points_xy.shape[0],), dtype=bool)
 
             pts_dom = self.points_xy[in_dom]
@@ -948,18 +938,15 @@ class GalaXYWorker(QtCore.QObject):
                         seed=0,
                         dpi=220,
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    self.logger.warning(f"Overview regions figure failed for ROI '{roi_raw_name}': {exc}")
 
             # ---- Per-channel analysis
             channel_points: Dict[str, np.ndarray] = {}
 
             for raw_ch in list(self.channels_to_analyze):
-                if self._cancel:
-                    try:
-                        self.logger.warning("Analysis canceled by user.")
-                    except Exception:
-                        pass
+                if self._cancel.is_set():                        
+                    self.logger.warning("Analysis canceled by user.")
                     break
 
                 # Determine alias + output dir name
@@ -987,8 +974,8 @@ class GalaXYWorker(QtCore.QObject):
                 if self.export_region_points and os.path.exists(points_export_path):
                     try:
                         os.remove(points_export_path)
-                    except Exception:
-                        pass
+                    except OSError as exc:
+                        self.logger.warning(f"Could not remove old points file '{points_export_path}': {exc}")
 
                 def _callback(region, pts_r, labels, rv_r, z_r=None, *, _ch_dir=ch_dir, _roi=roi_raw_name, _alias=alias, _raw=raw_label):
                     # Points export (append per region)
@@ -1013,8 +1000,8 @@ class GalaXYWorker(QtCore.QObject):
                                 header=not os.path.exists(points_export_path),
                                 index=False,
                             )
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            self.logger.warning(f"Could not export points for region '{region.name}': {exc}")
 
                     # Per-band isolation PNG (DBSCAN-agnostic):
                     # polygon outline + points that belong to this band/region.
@@ -1030,8 +1017,8 @@ class GalaXYWorker(QtCore.QObject):
                                 out_path=out_png,
                                 seed=0,
                             )
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            self.logger.warning(f"Band isolation figure failed for '{region.name}': {exc}")
 
                     # Per-region DBSCAN figure
                     if save_region_dbscan_figures:
@@ -1051,8 +1038,8 @@ class GalaXYWorker(QtCore.QObject):
                                 seed=0,
                                 dpi=220,
                             )
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            self.logger.warning(f"DBSCAN figure failed for region '{region.name}': {exc}")
 
                     # Per-cluster Ripley (per DBSCAN cluster inside this region)
                     if do_ripley and compute_cluster_ripley:
@@ -1094,9 +1081,9 @@ class GalaXYWorker(QtCore.QObject):
                                         w = hull.buffer(float(self.dbscan_params.eps))
 
                                     try:
-                                        w = w.buffer(0)
+                                        w = w.buffer(0)  # fix potential self-intersections
                                     except Exception:
-                                        pass
+                                        pass  # non-critical: buffer(0) fix failed; proceed with original geometry
 
                                     if w is None or getattr(w, "is_empty", True) or float(getattr(w, "area", 0.0)) <= 0:
                                         n_skipped_badwin += 1
@@ -1143,12 +1130,9 @@ class GalaXYWorker(QtCore.QObject):
                                             f"Tip: lower 'Cluster Ripley min points' (currently {min_pts})."
                                         )
                                     except Exception:
-                                        pass
+                                        pass  # logger itself failed; non-critical
                         except Exception as e:
-                            try:
-                                self.logger.warning(f"Cluster Ripley failed for region {region.name}: {e}")
-                            except Exception:
-                                pass
+                            self.logger.warning(f"Cluster Ripley failed for region {region.name}: {e}")
 
                 # ---- Run analysis for this channel
                 out = analyze_regions(
@@ -1188,8 +1172,8 @@ class GalaXYWorker(QtCore.QObject):
                         ]
                         cols = [c for c in keep_cols if c in out.region_summary.columns]
                         out.region_summary.loc[:, cols].to_csv(os.path.join(ch_dir, "ripley_summary.csv"), index=False)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        self.logger.warning(f"Could not save ripley_summary.csv for channel '{alias}': {exc}")
                 out.clusters.to_csv(os.path.join(ch_dir, "clusters.csv"), index=False)
                 if out.superclusters is not None:
                     out.superclusters.to_csv(os.path.join(ch_dir, "superclusters.csv"), index=False)
@@ -1214,11 +1198,7 @@ class GalaXYWorker(QtCore.QObject):
                                 title=f"Ripley — {roi_raw_name} — {alias} — {rname}",
                                 dpi=220,
                             )
-                    except Exception as e:
-                        try:
-                            self.logger.warning(f"Region Ripley figure export failed: {e}")
-                        except Exception:
-                            pass
+                    except Exception as e:                            self.logger.warning(f"Region Ripley figure export failed: {e}")
 
                 # Channel-level figures: overview + summary
                 if self.save_overview_figures:
@@ -1253,8 +1233,8 @@ class GalaXYWorker(QtCore.QObject):
                                 title=f"{roi_raw_name} — {alias} — Ripley summary",
                                 dpi=220,
                             )
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        self.logger.warning(f"Channel summary figure failed for '{alias}': {exc}")
 
                 # Collect aggregated
                 try:
@@ -1264,8 +1244,8 @@ class GalaXYWorker(QtCore.QObject):
                     rs.insert(2, "channel", alias)
                     rs.insert(3, "channel_raw", raw_label)
                     all_region_rows.append(rs)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    self.logger.warning(f"Could not collect region_summary for channel '{alias}': {exc}")
 
                 try:
                     cl = out.clusters.copy()
@@ -1274,8 +1254,8 @@ class GalaXYWorker(QtCore.QObject):
                     cl.insert(2, "channel", alias)
                     cl.insert(3, "channel_raw", raw_label)
                     all_cluster_rows.append(cl)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    self.logger.warning(f"Could not collect clusters for channel '{alias}': {exc}")
 
                 if out.superclusters is not None and not out.superclusters.empty:
                     try:
@@ -1285,8 +1265,8 @@ class GalaXYWorker(QtCore.QObject):
                         sc.insert(2, "channel", alias)
                         sc.insert(3, "channel_raw", raw_label)
                         all_supercluster_rows.append(sc)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        self.logger.warning(f"Could not collect superclusters for channel '{alias}': {exc}")
 
                 done_tasks += 1
                 self.progress.emit(int(100 * done_tasks / total_tasks))
@@ -1303,7 +1283,7 @@ class GalaXYWorker(QtCore.QObject):
                         os.makedirs(cross_dir, exist_ok=True)
 
                         for a_raw, b_raw in itertools.combinations(cross_channels, 2):
-                            if self._cancel:
+                            if self._cancel.is_set():
                                 break
 
                             pts_a_all = channel_points.get(str(a_raw), np.zeros((0, 2), dtype=float))
@@ -1327,14 +1307,14 @@ class GalaXYWorker(QtCore.QObject):
                                     (str(b_raw), str(a_raw), str(b_alias), str(a_alias), pts_b_all, pts_a_all),
                                 ),
                             ):
-                                if self._cancel:
+                                if self._cancel.is_set():
                                     break
 
                                 dir_dir = os.path.join(pair_dir, direction)
                                 os.makedirs(dir_dir, exist_ok=True)
 
                                 for region in regions:
-                                    if self._cancel:
+                                    if self._cancel.is_set():
                                         break
 
                                     # Mask each channel to the current window
@@ -1361,7 +1341,8 @@ class GalaXYWorker(QtCore.QObject):
                                         )
                                         try:
                                             summ = _summarize_ripley_lmr(curve["r"].to_numpy(dtype=float), curve["L_minus_r"].to_numpy(dtype=float))
-                                        except Exception:
+                                        except Exception as exc:
+                                            self.logger.warning(f"Cross-Ripley summary failed for region '{region.name}': {exc}")
                                             summ = {"r_peak": float("nan"), "lmr_peak": float("nan"), "auc_pos": float("nan")}
 
                                         # Persist curve
@@ -1405,11 +1386,7 @@ class GalaXYWorker(QtCore.QObject):
                             cross_df = pd.DataFrame(cross_rows)
                             cross_df.to_csv(os.path.join(cell_dir, "cross_ripley_summary.csv"), index=False)
                             all_cross_rows.append(cross_df)
-                except Exception as e:
-                    try:
-                        self.logger.warning(f"Cross-Ripley failed for ROI '{roi_raw_name}': {e}")
-                    except Exception:
-                        pass
+                except Exception as e:                        self.logger.warning(f"Cross-Ripley failed for ROI '{roi_raw_name}': {e}")
 
                 done_tasks += 1
                 self.progress.emit(int(100 * done_tasks / total_tasks))
@@ -1436,6 +1413,6 @@ class GalaXYWorker(QtCore.QObject):
         try:
             self.progress.emit(100)
         except Exception:
-            pass
+            pass  # Qt signal emission failure is non-critical at end of run
 
         self.finished.emit(self.out_dir)
