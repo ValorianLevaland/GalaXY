@@ -110,13 +110,13 @@ def union_geoms(geoms: Sequence[object]):
     try:
         return shops.unary_union(list(geoms))
     except Exception:
-        # fallback: iterative union
+        # fallback: iterative union when unary_union fails (e.g., degenerate geometries)
         g = geoms[0]
         for h in geoms[1:]:
             try:
                 g = g.union(h)
             except Exception:
-                pass
+                pass  # skip degenerate geometry in iterative fallback
         return g
 
 
@@ -137,7 +137,7 @@ def build_domain_geometry(
     try:
         domain = outer.difference(holes) if (holes is not None and (not holes.is_empty)) else outer
     except Exception:
-        domain = outer
+        domain = outer  # difference failed (degenerate geometry); use full outer polygon
 
     domain = clean_geometry(domain)
     return outer, holes, domain
@@ -156,9 +156,9 @@ def _regions_from_window_specs(
         if geom is None or getattr(geom, "is_empty", True):
             continue
         try:
-            geom = geom.buffer(0)
+            geom = geom.buffer(0)  # fix potential self-intersections
         except Exception:
-            pass
+            pass  # buffer(0) fix failed; proceed with original geometry
         area = float(getattr(geom, "area", 0.0))
         if area <= 0:
             continue
@@ -326,7 +326,7 @@ def build_outer_shells(
         try:
             shell = shell.intersection(domain_geom)
         except Exception:
-            pass
+            pass  # intersection failed; use uneroded shell (may extend slightly outside domain)
         if shell.is_empty:
             continue
         windows.append((f"outer_{k+1}_d{d0:g}-{d1:g}", shell))
@@ -383,7 +383,7 @@ def build_perinuclear_shells(
         try:
             shell = shell.intersection(domain_geom)
         except Exception:
-            pass
+            pass  # intersection failed; use uneroded shell (may extend slightly outside domain)
         if shell.is_empty:
             continue
         windows.append((f"perinuclear_{k+1}_d{d0:g}-{d1:g}", shell))
@@ -465,7 +465,7 @@ def build_seed_bands(
         try:
             ring = ring.intersection(domain_geom)
         except Exception:
-            pass
+            pass  # intersection failed; use uneroded ring (may extend slightly outside domain)
         if ring.is_empty:
             continue
         windows.append((f"seedband_{k+1}_d{d0:g}-{d1:g}", ring))
@@ -548,10 +548,7 @@ def build_geodesic_model(
         return model, "ring"
     except Exception as e_ring:
         if logger is not None:
-            try:
-                logger.warning(f"Auto backend: ring failed ({type(e_ring).__name__}: {e_ring}); using skeleton backend.")
-            except Exception:
-                pass
+            logger.warning(f"Auto backend: ring failed ({type(e_ring).__name__}: {e_ring}); using skeleton backend.")
         model = build_skeleton_model(domain_geom, seed_geom, geom_params)
         return model, "skeleton"
 
