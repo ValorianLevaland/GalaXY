@@ -1715,7 +1715,11 @@ class GalaXYDock(QtWidgets.QWidget):
         self.logger.error("Analysis failed:\n" + tb)
         QtWidgets.QMessageBox.critical(self, "Analysis failed", tb)
 
-
+    def closeEvent(self, event):
+        if self.logger and self.logger._file_handle:
+            self.logger.set_log_file(None)
+        super().closeEvent(event)
+    
 # ----------------------------
 # Entry point
 # ----------------------------
