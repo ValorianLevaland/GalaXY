@@ -63,6 +63,7 @@ class QtLogHandler(QtCore.QObject):
     def set_log_file(self, path: Optional[str]) -> None:
         if self._file_handle:
             try:
+                self._file_handle.flush()
                 self._file_handle.close()
             except Exception:
                 pass
