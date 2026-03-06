@@ -310,12 +310,12 @@ def _ripley_for_cluster_region(
     try:
         local = hull.buffer(float(dbscan_eps))
     except Exception:
-        local = hull
+        local = hull  # buffer failed; use hull directly (may affect edge correction)
 
     try:
         local = local.intersection(parent_region.geom)
     except Exception:
-        pass
+        pass  # intersection failed; local window may extend outside parent region
 
     if local is None or getattr(local, "is_empty", True):
         return None, {"r_peak": np.nan, "lmr_peak": np.nan, "auc_pos": np.nan}, float("nan")
@@ -353,12 +353,9 @@ def _ripley_for_cluster_region(
             env_lo = env["Lmr_lo"]
             env_hi = env["Lmr_hi"]
             env_mean = env["Lmr_mean"]
-        except Exception:
+        except Exception as exc:
             if logger is not None:
-                try:
-                    logger.warning("CSR envelope failed for a cluster; continuing without envelope.")
-                except Exception:
-                    pass
+                logger.warning(f"CSR envelope failed for a cluster: {exc}; continuing without envelope.")
 
     lmr = est["L_minus_r"]
     if np.all(np.isnan(lmr)):
@@ -544,13 +541,10 @@ def analyze_regions(
                     region_callback(region, pts_r, labels, rv_r, z_r)
                 except TypeError:
                     region_callback(region, pts_r, labels, rv_r)
-            except Exception:
+            except Exception as exc:
                 # Never let plotting/export crash the analysis.
                 if logger is not None:
-                    try:
-                        logger.warning(f"Region callback failed for {region.name}; continuing.")
-                    except Exception:
-                        pass
+                    logger.warning(f"Region callback failed for '{region.name}' (export/figures may be incomplete): {exc}")
 
         n_points = int(pts_r.shape[0])
         if run_dbscan_mode:
