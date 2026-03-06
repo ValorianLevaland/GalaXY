@@ -86,7 +86,7 @@ def _geom_to_napari_rings(geom) -> List[np.ndarray]:
             for g in geom.geoms:
                 rings.extend(_geom_to_napari_rings(g))
         except Exception:
-            pass
+            pass  # unknown geometry type (e.g. GeometryCollection) — skip silently
 
     return rings
 
@@ -542,7 +542,7 @@ class GalaXYDock(QtWidgets.QWidget):
         try:
             self.chk_cross_ripley.setVisible(expert)
         except Exception:
-            pass
+            pass  # widget may not exist in non-expert builds
 
         current = self.cmb_profile.currentText() if self.cmb_profile.count() > 0 else None
 
@@ -652,14 +652,14 @@ class GalaXYDock(QtWidgets.QWidget):
             self.grp_channels.setVisible(False)
             self.tbl_channels.setRowCount(0)
         except Exception:
-            pass
+            pass  # UI widget may not yet exist if called early
 
         try:
             x, y = auto_detect_xy_columns(df)
             self.cmb_x.setCurrentText(x)
             self.cmb_y.setCurrentText(y)
         except Exception:
-            pass
+            pass  # column auto-detection is a best-effort heuristic; failure is non-critical
 
         # Heuristic defaults for optional Z / channel columns
         try:
@@ -688,7 +688,7 @@ class GalaXYDock(QtWidgets.QWidget):
             if ch_candidates:
                 self.cmb_channel.setCurrentText(ch_candidates[0])
         except Exception:
-            pass
+            pass  # Z/channel heuristic detection is best-effort; failure is non-critical
 
         self.lbl_datainfo.setText(f"Loaded: {os.path.basename(path)}\nRows: {len(df):,}  Cols: {df.shape[1]}")
         self.logger.info(f"Loaded CSV: {path}")
@@ -761,7 +761,7 @@ class GalaXYDock(QtWidgets.QWidget):
                 self.tbl_channels.setRowCount(0)
                 self.grp_channels.setVisible(False)
             except Exception:
-                pass
+                pass  # UI widget may not exist if called before full init
 
         try:
             import napari  # noqa: F401
@@ -791,7 +791,7 @@ class GalaXYDock(QtWidgets.QWidget):
             try:
                 self.points_layer.properties = properties if properties else {}
             except Exception:
-                pass
+                pass  # napari properties API varies between versions
 
     def _snapshot_channels_table(self) -> dict:
         """Return {raw_label: (use_bool, alias_str)} from the channels table."""
@@ -808,8 +808,8 @@ class GalaXYDock(QtWidgets.QWidget):
                 use = bool(chk.checkState() == QtCore.Qt.Checked)
                 if raw:
                     out[str(raw)] = (use, alias)
-        except Exception:
-            pass
+        except Exception as exc:
+            self.logger.warning(f"Could not read channels table state: {exc}")
         return out
 
     def _populate_channels_table(self, labels: List[str]) -> None:
@@ -843,7 +843,7 @@ class GalaXYDock(QtWidgets.QWidget):
         try:
             self.tbl_channels.resizeColumnsToContents()
         except Exception:
-            pass
+            pass  # non-critical UI sizing
 
     # -----------------
     # ROI layer creation
@@ -853,8 +853,8 @@ class GalaXYDock(QtWidgets.QWidget):
         try:
             layer = self.viewer.layers[name]
             return layer
-        except Exception:
-            pass
+        except (KeyError, IndexError):
+            pass  # layer does not exist yet; will be created below
 
         # Create new
         layer = self.viewer.add_shapes(name=name, shape_type="polygon", edge_width=2)
@@ -915,7 +915,8 @@ class GalaXYDock(QtWidgets.QWidget):
                         prev_type = it.text().strip() if it is not None else ""
 
                 prev[idx] = {"checked": prev_checked, "name": prev_name, "type": prev_type}
-        except Exception:
+        except Exception as exc:
+            self.logger.warning(f"Could not read previous ROI table state: {exc}")
             prev = {}
 
         table.setRowCount(0)
@@ -977,18 +978,18 @@ class GalaXYDock(QtWidgets.QWidget):
         if self.domain_layer is None:
             try:
                 self.domain_layer = self.viewer.layers["Domain"]
-            except Exception:
-                pass
+            except (KeyError, IndexError):
+                pass  # layer not yet created by user
         if self.holes_layer is None:
             try:
                 self.holes_layer = self.viewer.layers["Holes"]
-            except Exception:
-                pass
+            except (KeyError, IndexError):
+                pass  # layer not yet created by user
         if self.seeds_layer is None:
             try:
                 self.seeds_layer = self.viewer.layers["Seeds"]
-            except Exception:
-                pass
+            except (KeyError, IndexError):
+                pass  # layer not yet created by user
 
         self._populate_table_from_layer(self.tbl_domains, self.domain_layer, "domain")
         self._populate_table_from_layer(self.tbl_holes, self.holes_layer, "hole")
@@ -1273,7 +1274,7 @@ class GalaXYDock(QtWidgets.QWidget):
             self.overlay_layer.face_color = "transparent"
             self.overlay_layer.edge_color = "yellow"
         except Exception:
-            pass
+            pass  # napari layer styling is non-critical
         self.viewer.layers.selection.active = self.overlay_layer
         self.logger.info(f"Previewed {len(regions)} regions on RegionsOverlay")
 
@@ -1420,7 +1421,7 @@ class GalaXYDock(QtWidgets.QWidget):
             edges_layer.face_color = "transparent"
             edges_layer.edge_color = "cyan"
         except Exception:
-            pass
+            pass  # napari layer styling is non-critical
 
         # Raw nodes
         nodes_yx = np.column_stack([prev.nodes_xy[:, 1], prev.nodes_xy[:, 0]]) if prev.nodes_xy.size else np.zeros(
@@ -1431,7 +1432,7 @@ class GalaXYDock(QtWidgets.QWidget):
             nodes_layer.size = float(geom_params.pixel_size) * 0.5
             nodes_layer.opacity = 0.8
         except Exception:
-            pass
+            pass  # napari layer property API may differ across versions
 
         # Median/resampled skeleton
         med_yx = np.column_stack([prev.median_xy[:, 1], prev.median_xy[:, 0]]) if prev.median_xy.size else np.zeros(
@@ -1442,7 +1443,7 @@ class GalaXYDock(QtWidgets.QWidget):
             med_layer.size = float(geom_params.pixel_size) * 0.8
             med_layer.opacity = 0.9
         except Exception:
-            pass
+            pass  # napari layer property API may differ across versions
 
         # Overlaps
         ov_yx = np.column_stack(
@@ -1453,7 +1454,7 @@ class GalaXYDock(QtWidgets.QWidget):
             ov_layer.size = float(geom_params.pixel_size) * 1.2
             ov_layer.opacity = 1.0
         except Exception:
-            pass
+            pass  # napari layer property API may differ across versions
 
         # Log QC stats
         self.logger.info(
@@ -1469,7 +1470,7 @@ class GalaXYDock(QtWidgets.QWidget):
         try:
             self.viewer.layers.selection.active = med_layer
         except Exception:
-            pass
+            pass  # napari selection is non-critical
 
     # -----------------
     # Output dir
@@ -1630,6 +1631,10 @@ class GalaXYDock(QtWidgets.QWidget):
         self.btn_cancel.setEnabled(True)
         self.progress.setValue(0)
 
+        # Pipeline mode: 'full' runs DBSCAN + optional Ripley.
+        # 'ripley_only' skips DBSCAN (no run_mode widget yet; always 'full').
+        run_mode = "full"
+
         # Start worker
         self.worker_thread = QtCore.QThread()
         self.worker = GalaXYWorker(
@@ -1707,19 +1712,31 @@ class GalaXYDock(QtWidgets.QWidget):
         self.progress.setValue(100)
         self.lbl_runinfo.setText(f"Finished. Outputs saved in:\n{out_dir}")
         self.logger.info("Analysis finished.")
+        self._cleanup_worker()
 
     def _on_failed(self, tb: str) -> None:
         self.btn_run.setEnabled(True)
         self.btn_cancel.setEnabled(False)
         self.progress.setValue(0)
         self.logger.error("Analysis failed:\n" + tb)
+        self._cleanup_worker()
         QtWidgets.QMessageBox.critical(self, "Analysis failed", tb)
 
-    def closeEvent(self, event):
-        if self.logger and self.logger._file_handle:
-            self.logger.set_log_file(None)
-        super().closeEvent(event)
-    
+    def _cleanup_worker(self) -> None:
+        """Release worker and thread objects after analysis ends (prevents memory leaks)."""
+        if self.worker is not None:
+            try:
+                self.worker.deleteLater()
+            except Exception:
+                pass
+            self.worker = None
+        if self.worker_thread is not None:
+            try:
+                self.worker_thread.deleteLater()
+            except Exception:
+                pass
+            self.worker_thread = None
+
 # ----------------------------
 # Entry point
 # ----------------------------
