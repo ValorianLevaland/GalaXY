@@ -45,7 +45,7 @@ def _jsonable(obj: Any) -> Any:
         if isinstance(obj, np.ndarray):
             return obj.tolist()
     except Exception:
-        pass
+        pass  # numpy not available; fall through to str() conversion
 
     # fallback
     return str(obj)
@@ -63,15 +63,19 @@ class QtLogHandler(QtCore.QObject):
     def set_log_file(self, path: Optional[str]) -> None:
         if self._file_handle:
             try:
-                self._file_handle.flush()
                 self._file_handle.close()
             except Exception:
-                pass
+                pass  # close() failed (e.g. already closed); continue to reset handle
             self._file_handle = None
 
         if path:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            self._file_handle = open(path, "a", encoding="utf-8")
+            os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+            try:
+                self._file_handle = open(path, "a", encoding="utf-8")
+            except OSError as exc:
+                # Log to stderr only — we cannot use the logger here (it calls us).
+                import sys
+                print(f"[GalaXY] WARNING: Could not open log file {path!r}: {exc}", file=sys.stderr)
 
     def _emit(self, level: str, msg: str) -> None:
         ts = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
